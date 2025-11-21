@@ -1,0 +1,55 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    git \
+    pkg-config \
+    libssl-dev \
+    curl \
+    build-essential \
+    cmake \
+    ninja-build \
+    g++ \
+    libasound2-dev \
+    python3-pip \
+    python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python packages
+RUN pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# Install Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Clone repos
+RUN git clone https://github.com/kyutai-labs/delayed-streams-modeling.git /app/delayed-streams-modeling && \
+    git clone https://github.com/kyutai-labs/moshi.git /app/moshi
+
+# Install more Python dependencies
+WORKDIR /app/delayed-streams-modeling
+RUN pip install --no-cache-dir moshi setuptools xformers pydantic julius torchaudio
+
+# Compile and install Rust server
+WORKDIR /app/moshi/rust
+RUN cargo build --release 2>&1 | grep -E "Compiling|Finished|error" | tail -20
+RUN cargo install --path moshi-server --force 2>&1 | tail -5
+
+# Generate SSL certificates
+RUN openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes \
+    -subj "/CN=localhost"
+
+# Copy certificates to delayed-streams-modeling
+RUN cp key.pem cert.pem /app/delayed-streams-modeling/
+
+# Set working directory back to delayed-streams-modeling
+WORKDIR /app/delayed-streams-modeling
+
+# Expose port
+EXPOSE 8080
+
+# Start server
+CMD ["moshi-server", "worker", "--config", "configs/config-tts.toml"]
